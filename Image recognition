@@ -1,0 +1,444 @@
+from keras import backend as K
+import keras
+import json
+import pandas as pd
+import tensorflow as tf
+from keras.layers import Conv2D
+from keras.layers import MaxPooling2D
+from keras.layers.core import Flatten, Dense,Dropout
+from keras import Model, Sequential
+from keras.preprocessing.image import  ImageDataGenerator
+from keras.utils import multi_gpu_model
+from keras.callbacks import EarlyStopping
+from keras.utils import to_categorical
+from keras.optimizers import Adam
+from keras.callbacks import ModelCheckpoint, LearningRateScheduler
+from keras.callbacks import ModelCheckpoint
+from keras.models import model_from_json
+import time
+from time import sleep
+import gc
+import datetime
+from enum import Enum
+import os
+import cv2
+from tensorflow.python.client import device_lib
+from keras import applications as K_Models
+def LenNet(input_size, output_classes):
+    
+    model = Sequential()
+    #Layer 1
+    #Conv Layer 1
+    model.add(Conv2D(filters = 32, 
+                     kernel_size = 11, 
+                     strides = 1, 
+                     activation = 'relu', 
+                     input_shape = (input_size[0],input_size[1],input_size[2])))
+    model.add(Conv2D(filters = 32, 
+                     kernel_size = 7, 
+                     strides = 1, 
+                     activation = 'relu'
+                    ))
+    model.add(Conv2D(filters = 32, 
+                     kernel_size = 5, 
+                     strides = 1, 
+                     activation = 'relu', 
+                     ))
+    
+    #Pooling layer 1
+    model.add(MaxPooling2D(pool_size = 5, strides = 1))
+    
+    model.add(Conv2D(filters = 32, 
+                 kernel_size = 3,
+                 strides = 1,
+                 activation = 'relu'
+                ))
+    model.add(Conv2D(filters = 32, 
+                 kernel_size = 3,
+                 strides = 1,
+                 activation = 'relu'
+                 ))
+        #Pooling layer 1
+    model.add(MaxPooling2D(pool_size = 5, strides = 1))
+        
+    #Layer 2
+    #Conv Layer 2
+    model.add(Conv2D(filters = 32, 
+                     kernel_size = 3,
+                     strides = 1,
+                     activation = 'relu'
+                     ))
+    model.add(Conv2D(filters = 32, 
+                     kernel_size = 3,
+                     strides = 1,
+                     activation = 'relu'
+                    ))
+    
+    #Pooling Layer 2
+    model.add(MaxPooling2D(pool_size = 3, strides = 2))
+    model.add(Dropout(0.25))
+    model.add(Flatten())
+    model.add(Dense(64, activation='relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(output_classes, activation='softmax'))
+    return model       
+def Load_Model():
+    global ML_Model
+    
+    if(SELECTED_MODEL == Available_Models.ResNet18):
+        ML_Model = ResNet18(input_shape=INPUT_SIZE, weights=INITIALIZATION_WIEGHTS, include_top=INCLUDE_TOP)
+
+        
+    elif(SELECTED_MODEL == Available_Models.Noise_Detector):
+        ML_Model = LenNet(input_size= INPUT_SIZE, output_classes=OUTPUT_CLASSES)
+        return
+
+    else:
+        print("NO MODEL IDENTIFIER MATCHED")
+      
+    if(POOLING is None):
+        last_layer = Flatten()(ML_Model.output)
+    else:
+        last_layer = ML_Model.output
+        if(SELECTED_MODEL ==  Available_Models.ResNet18 or SELECTED_MODEL == Available_Models.ResNet34):
+            last_layer = keras.layers.GlobalAveragePooling2D()(ML_Model.output)
+        
+    if(len(Dense_Layers_Neurons) > 0):
+        for n in Dense_Layers_Neurons:
+            last_layer = Dense(n, activation='relu')(last_layer)
+            if(Is_To_Add_Dropout):
+                last_layer =  Dropout(Dropout_Rate)
+    else:
+        if(Is_To_Add_Dropout):
+
+            last_layer =  Dropout(Dropout_Rate)(last_layer)
+        
+    last_layer = Dense(OUTPUT_CLASSES, activation=FINAL_LAYER_CLASSIFICATION_FUCNTION,
+                       name='softmax')(last_layer)
+    ML_Model = Model(ML_Model.input, last_layer)
+
+def Freeze_Model_Parameters():
+    global ML_Model
+    if(FREEZE_EARLY_LAYERS_WIHT_PERCENT <= 0):
+        print("Zero layers freezed")
+    else:
+        # Freezing Models Layers
+        freezed_layers_count = int(len(ML_Model.layers) * FREEZE_EARLY_LAYERS_WIHT_PERCENT)
+        print("Freeze {0} early layers".format(freezed_layers_count))
+        for layer in ML_Model.layers[:freezed_layers_count]:
+            layer.trainable = False
+    
+def Add_Conv_Regularizer():
+    global ML_Model
+#     alpha = 0.0001  # weight decay coefficient
+    if(REGULARIZE_EARLY_LAYERS_WIHT_PERCENT <= 0):
+        print("Zero layers regularized")
+    else:
+        # Freezing Models Layers
+        regularized_layers_count = int(len(ML_Model.layers) * REGULARIZE_EARLY_LAYERS_WIHT_PERCENT)
+        print("Regularize {0} early layers".format(regularized_layers_count))
+        for layer in ML_Model.layers[:regularized_layers_count]:
+            
+            if isinstance(layer, keras.layers.Conv2D) or isinstance(layer, keras.layers.Dense):
+
+                layer.add_loss(keras.regularizers.l2(REGULARIZE_EARLY_LAYERS_WITH_RATIO)(layer.kernel))
+
+            if hasattr(layer, 'bias_regularizer') and layer.use_bias:
+                layer.add_loss(keras.regularizers.l2(REGULARIZE_EARLY_LAYERS_WITH_RATIO)(layer.bias))
+               
+REGULARIZE_EARLY_LAYERS_WIHT_PERCENT = 1
+REGULARIZE_EARLY_LAYERS_WITH_RATIO = 0.0001
+
+def Compile_Model():
+    global P_ML_Model
+    global ML_Model
+
+    if(AVAILABLE_GPUs > 1):
+        print("Compiling multi GPU models")
+        P_ML_Model = multi_gpu_model(ML_Model, AVAILABLE_GPUs)
+    else:
+        print("Compiling single GPU model")
+        P_ML_Model = ML_Model
+
+    adam = Adam(lr=LEARNING_RATE, beta_1=0.9, beta_2=0.999,
+            epsilon=None, decay=1e-6, amsgrad=False)
+    P_ML_Model.compile(loss="categorical_crossentropy", optimizer=adam, metrics=['accuracy'])
+
+def Create_Data_Loader():
+    global TRAIN_GENERATOR
+    global VALID_GENERATOR
+    global STEP_SIZE_TRAIN
+    global STEP_SIZE_VALID
+    
+    train_datagen = ImageDataGenerator(rescale=1./255,                 
+            rotation_range=180,
+            zoom_range=[-0.2, 0.2],
+            horizontal_flip=True,
+            fill_mode='nearest'
+    )
+    validation_datagen = ImageDataGenerator(rescale=1./255, )
+
+    TRAIN_GENERATOR = train_datagen.flow_from_directory(TRAINING_DIRECTORY_PATH, 
+                classes =CLASS_MAPPINGS,
+                target_size=(INPUT_SIZE[0], INPUT_SIZE[1]), 
+                batch_size=BATCH_SIZE,
+                color_mode=COLOR_MODE,
+                shuffle=SHUFFLE,
+                seed=SEED,
+                class_mode='categorical') 
+    print("TRAINING_DIRECTORY_PATH=",TRAINING_DIRECTORY_PATH)
+    print("TRAIN_GENERATOR.class_indices =", TRAIN_GENERATOR.class_indices)
+    
+    VALID_GENERATOR = validation_datagen.flow_from_directory(
+                VALIDATION_DIRECTORY_PATH,
+                classes =CLASS_MAPPINGS,
+                target_size=(INPUT_SIZE[0], INPUT_SIZE[1]),
+                batch_size=BATCH_SIZE,
+                color_mode=COLOR_MODE,
+                seed=SEED,
+                class_mode='categorical')
+    print("VALIDATION_DIRECTORY_PATH=",VALIDATION_DIRECTORY_PATH)
+    print("TRAIN_GENERATOR.class_indices =", VALID_GENERATOR.class_indices)
+
+    STEP_SIZE_TRAIN=TRAIN_GENERATOR.n//TRAIN_GENERATOR.batch_size
+    STEP_SIZE_VALID=VALID_GENERATOR.n//VALID_GENERATOR.batch_size
+    print("STEP_SIZE_TRAIN=",STEP_SIZE_TRAIN)
+    print("STEP_SIZE_VALID=",STEP_SIZE_VALID)
+
+def Get_Model_Storage_Info():
+    global Model_Name
+    global Weights_Path
+    global History_Path
+    global Model_Path
+    Model_Name = "{0}_{1}_Degree_{2}".format(MODEL_NAME_PREFIX, SELECTED_MODEL, M_Folder)
+    
+    Weights_Path = "{0}/CheckPoint_{1}_Best_Model_Weights".format(Store_Trained_ML_Model_Info_At, 
+                                                                       Model_Name)
+    History_Path = "{0}/{1}_history".format(Store_Trained_ML_Model_Info_At, 
+                                            Model_Name)
+    Model_Path = "{0}/{1}_model_architecture".format(Store_Trained_ML_Model_Info_At,
+                                                          Model_Name)
+    print("Model_Name=", Model_Name)
+    print("Weights_Path=", Weights_Path)
+    print("History_Path=", History_Path)
+    print("Model_Path=", Model_Path)
+
+def Do_Training():
+    global History
+    checkpoint = ModelCheckpoint(Weights_Path, monitor=Monitor, verbose=1, save_best_only=True, mode=Mode)
+    early_stopping = EarlyStopping(monitor=Monitor, min_delta=0, patience=EARLY_STOPPING_PATIENCE, verbose=0, 
+                                       mode=Mode)
+    callbacks_list = [early_stopping,  checkpoint]
+    History = P_ML_Model.fit_generator(
+            TRAIN_GENERATOR,
+            steps_per_epoch=STEP_SIZE_TRAIN,
+            epochs=EPOCHs,
+            validation_data=VALID_GENERATOR,
+            validation_steps=STEP_SIZE_VALID, 
+             callbacks=callbacks_list,
+            class_weight = CLASSES_WEIGTHAGES)
+
+def Save_Model_Info():
+    with open('{0}.json'.format(History_Path), 'w') as f:
+        json.dump(History.history, f)
+
+    pd.DataFrame(History.history).to_csv("{0}.csv".format(History_Path))
+    try:
+        model_yaml = ML_Model.to_yaml()
+        with open("{0}.yaml".format(Model_Path), "w") as yaml_file:
+            yaml_file.write(model_yaml)
+    except Exception as eExcep:
+        print(str(eExcep))
+    model_json = ML_Model.to_json()
+    with open("{0}.json".format(Model_Path), "w") as json_file:
+        json_file.write(model_json)
+
+def Evaluate_Model():
+    global TEST_CSV
+    try:
+        TEST_CSV["{0}_Prd_{1}".format(M_Folder,Model_Name)] = None
+        try:
+            for index, row in TEST_CSV.iterrows():
+                for test_img_path in TEST_CSV["ML_File_Path_For_TrainValTest"][index].split(","):
+#                     print("test_img_path=", test_img_path)
+                    test_img = cv2.imread(test_img_path, cv2.IMREAD_COLOR)
+                    test_img = test_img.astype("float32") / 255
+#                     test_img = np.expand_dims(test_img, -1)
+                    test_img = cv2.resize(test_img, (INPUT_SIZE[0], 
+                                                           INPUT_SIZE[1]))
+                    test_img = np.reshape(test_img,(1,test_img.shape[0], 
+                                    test_img.shape[1], test_img.shape[2]))
+                    prediction = np.argmax(ML_Model.predict(test_img, 
+                                                            batch_size=1))
+                    TEST_CSV["{0}_Prd_{1}".format(M_Folder, Model_Name)][index] = prediction
+
+                    break
+        except Exception as eError:
+            TEST_CSV["{0}_Prd_{1}".format(M_Folder, Model_Name)][index] = "Error"
+            print("Some Error Occurred While Prediction." + str(eError))
+
+        
+    except Exception as eError:
+        print("Some Error Occurred While Evaluating the Model." + str(eError))               
+def Initiate_Model_Training():
+    global ML_Model
+    global P_ML_Model
+    
+    print("SELECTED MODEL #" + str(SELECTED_MODEL))
+    if(AVAILABLE_GPUs > 1):
+        with tf.device('/cpu:0'):
+            Load_Model()
+    else:
+        Load_Model()
+    Add_Conv_Regularizer()
+    Freeze_Model_Parameters()
+    Compile_Model()
+    Create_Data_Loader()
+    Get_Model_Storage_Info()
+    ML_Model.summary()
+    Do_Training()
+    Save_Model_Info()
+Monitor = "val_acc"
+Mode = "auto" 
+COOL_DOWN = 25
+ML_Model = None
+P_ML_Model = None
+TRAIN_GENERATOR = None
+VALID_GENERATOR = None
+STEP_SIZE_TRAIN = None
+STEP_SIZE_VALID = None
+Model_Name = None
+Weights_Path = None
+History_Path = None
+Model_Path = None
+History = None
+SEED = 101
+OUTPUT_CLASSES = 9
+AVAILABLE_GPUs = len([gpu for gpu in device_lib.list_local_devices() if gpu.device_type=="GPU"])
+if(AVAILABLE_GPUs == 0):
+    AVAILABLE_GPUs = 1
+    print("AVAILABLE_GPUs = 0 (NO GPU ACCESS)")
+print("AVAILABLE_GPUs=",AVAILABLE_GPUs)
+
+FINE_TUNE = False
+
+EARLY_STOPPING_PATIENCE = 15
+COLOR_MODE = "rgb"
+FINAL_LAYER_CLASSIFICATION_FUCNTION = "softmax"
+SHUFFLE = True  
+POOLING = "avg"
+INITIALIZATION_WIEGHTS = "imagenet"
+INCLUDE_TOP = False
+FREEZE_EARLY_LAYERS_WIHT_PERCENT = 0
+INPUT_SIZE = (224,224, 3)
+INPUT_TENSOR = None
+BATCH_SIZE = 0 
+EPOCHs = 250
+
+
+
+CLASSES_WEIGTHAGES = None
+
+CLASS_MAPPINGS = []
+
+MODEL_NAME_PREFIX = "M_Folder_Trained_Model"
+BASE = "."
+
+
+
+# DATA PATHS
+ROOT_DS_FOLDER_PATH = None
+
+TRAINING_DIRECTORY_PATH = None
+VALIDATION_DIRECTORY_PATH = None
+TESTING_DIRECTORY_PATH = None
+Store_Trained_ML_Model_Info_At = None
+
+
+class Available_Models(Enum):
+    VGG16 = "VGG16"
+    VGG19 = "VGG19"
+    InceptionV3 = "InceptionV3"
+    Xception = "Xception" # TensorFlow ONLY
+    ResNet50 = "ResNet50"
+    ResNet18 = "ResNet18"
+    ResNet34 = "ResNet34"
+    DenseNet121 = "DenseNet121"
+    DenseNet169 = "DenseNet169"
+    DenseNet201 = "DenseNet201"
+    MobileNet = "MobileNet"
+    InceptionResNetV2 = "InceptionResNetV2"
+    NASNetLarge = "NASNetLarge"
+    NASNetMobile = "NASNetMobile"
+    Noise_Detector = "Noise_Detector"
+
+Is_To_Add_Dropout = False
+LEARNING_RATE_LST = [0.0001]#, 0.005, 0.009]
+Dropout_Rate_LST = [0.5]#, 0.0, 0.0]
+Dense_Layers_Neurons = []#[512]
+LEARNING_RATE = None
+Dropout_Rate = None
+TEST_CSV_PATH = None
+TEST_CSV_Predicted_PATH = None
+TEST_CSV = None
+
+if __name__ == "__main__":
+    global LEARNING_RATE
+    global Dropout_Rate
+    global INPUT_SIZE
+    global BATCH_SIZE 
+    global ROOT_DS_FOLDER_PATH
+    global TRAINING_DIRECTORY_PATH
+    global VALIDATION_DIRECTORY_PATH
+    global CLASS_MAPPINGS 
+    global OUTPUT_CLASSES
+    global TEST_CSV_PATH
+    global Store_Trained_ML_Model_Info_At
+    global TEST_CSV
+    global TEST_CSV_Predicted_PATH
+    for learning_rate, dropout_rate in zip(LEARNING_RATE_LST, Dropout_Rate_LST):
+        LEARNING_RATE = learning_rate
+        Dropout_Rate = dropout_rate
+
+        M_Folder = "None"
+
+        Trained_Models_Root_Path = "./Trained_Models_for_Noise_Detection_With_Learning_Rate_{0}_With_Dropout_{1}_Ratio_{2}".format(
+            LEARNING_RATE,Is_To_Add_Dropout, Dropout_Rate)
+        
+        if(os.path.exists(Trained_Models_Root_Path)):
+            pass
+        else:
+            os.makedirs(Trained_Models_Root_Path)
+
+        Store_Trained_ML_Model_Info_At = "{0}/{1}".format(Trained_Models_Root_Path, M_Folder)    
+        if(os.path.exists(Store_Trained_ML_Model_Info_At)):
+            pass
+        else:
+            os.makedirs(Store_Trained_ML_Model_Info_At)
+
+        print("*" * 50)
+        print("*" * 25)
+        print("M_Folder={0}".format(M_Folder))
+        
+        ROOT_DS_FOLDER_PATH = "C:\\dataset\\"
+
+        TRAINING_DIRECTORY_PATH = "{0}/TRAINING_DIRECTORY".format(ROOT_DS_FOLDER_PATH)
+        OUTPUT_CLASSES = len(os.listdir(TRAINING_DIRECTORY_PATH))
+        CLASS_MAPPINGS = []
+        for label in range(0, OUTPUT_CLASSES):
+
+            CLASS_MAPPINGS.append(str(label))
+        VALIDATION_DIRECTORY_PATH = "{0}/VALIDATION_DIRECTORY".format(ROOT_DS_FOLDER_PATH)
+
+        print("Current TRAINING_DIRECTORY_PATH={0}".format(TRAINING_DIRECTORY_PATH))
+        print("Current VALIDATION_DIRECTORY_PATH={0}".format(VALIDATION_DIRECTORY_PATH))
+
+        print("*" * 25)
+
+        BATCH_SIZE = 64 * AVAILABLE_GPUs
+        INPUT_SIZE = (64, 64, 3)
+        SELECTED_MODEL = Available_Models.Noise_Detector
+        Initiate_Model_Training()
+        print("SAVING_PREDICTED_CSV_TO_PATH=" + str(TEST_CSV_Predicted_PATH))
+        print("*" * 25)
+        print("M_Folder {0} Training Has Completed!".format(M_Folder))
