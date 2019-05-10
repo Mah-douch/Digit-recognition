@@ -1,0 +1,67 @@
+# import the necessary packages
+import cv2
+import numpy as np
+import numpy
+import os
+import glob
+# calculate the number of images in the folder 
+path, dirs, files = next(os.walk("C:\F44R-C4-PilotBroomCloset 2018-03-14_18_43_26_755.asf"))
+file_count = len(files)
+
+# create a list of paths for the images
+
+T=([entry for entry in glob.iglob("{}/**".format("C:\F44R-C4-PilotBroomCloset 2018-03-14_18_43_26_755.asf"), recursive=True) if os.path.isfile(entry) == True])
+
+j=1
+
+R= numpy.arange(1,len(T),1)
+for i, R1 in enumerate(R):
+
+    # load the image and show it
+    image = cv2.imread(T[i])   
+    # cv2.imshow("original", image)
+    cv2.waitKey(0)
+
+    # we need to keep in mind aspect ratio so the image does
+    # not look skewed or distorted -- therefore, we calculate
+    # the ratio of the new image to the old image
+    r = 100.0 / image.shape[1]
+    dim = (100, int(image.shape[0] * r))
+
+
+
+
+    # perform the actual resizing of the image and show it
+    resized = cv2.resize(image, dim, interpolation = cv2.INTER_AREA)
+    cv2.imshow("resized", resized)
+    
+
+   
+    
+    #First mask*******
+    # crop the image using array slices -- it's a NumPy array
+    # after all!
+    
+    cropped1 = resized[0:100, 13:36]
+    cv2.imshow("cropped", cropped1)
+
+    cv2.imwrite('C:\aaa\Image1' + str(j) + '.jpeg', cropped1)
+
+    cv2.waitKey(0)
+    
+
+    #Second Mask******
+
+    cropped2 = resized[0:100, 37:55]
+    cv2.imshow("cropped", cropped2)
+    cv2.imwrite('C:\aaa\Image2' + str(j) + '.jpeg', cropped2)
+    cv2.waitKey(0)
+    
+
+    #Third  Mask******
+   
+    cropped3 = resized[0:100, 54:76]
+    cv2.imshow("cropped", cropped3)
+    cv2.imwrite('C:\aaa\Image3.jpeg', cropped3)
+    cv2.waitKey(0)
+    j=j+1
